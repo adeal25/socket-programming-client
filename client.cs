@@ -29,6 +29,7 @@ namespace Client
                     Console.WriteLine("Socket connected to -> {0} ", sender.RemoteEndPoint.ToString());
 
                     // Send <SOH>
+                    //dibuat variable constant
                     var soh = "\x01";
                     sender.Send(Encoding.ASCII.GetBytes(soh));
                     Console.WriteLine($"Socket client kirim: \"{(soh == "\x01" ? "<SOH>" : soh)}\"");
@@ -37,6 +38,7 @@ namespace Client
                     // Wait for <ACK>
                     byte[] ackBuffer = new byte[1];
                     sender.Receive(ackBuffer);
+
                     if (ackBuffer[0] != 0x06)
                     {
                         throw new Exception("Failed to receive ACK after SOH");
@@ -55,23 +57,49 @@ namespace Client
                         {
                             break;
                         }
+                        
                     
                         // Send <STX>userMessage<ETX>
                         var stx = "\x02";
+                        var etb = "\x23";
                         var etx = "\x03";
-                        byte[] messageToSend = Encoding.ASCII.GetBytes(stx + userMessage + etx);
-                        Console.WriteLine($"Socket client kirim pesan: \"{(stx == "\x02" ? "<STX>" : stx)}\"{userMessage}\"{(etx == "\x03" ? "<ETX>" : etx)}\" ");
+                        
+                        byte[] messageBuffer = Encoding.ASCII.GetBytes(userMessage);
+                        // byte[] messageBuffer = Encoding.ASCII.GetBytes(userMessage);
+                        
 
-                        sender.Send(messageToSend);
-                    
-                        // Wait for <ACK>
-                        sender.Receive(ackBuffer);
-                        Console.WriteLine("Socket client terima ACK");
 
-                        if (ackBuffer[0] != 0x06)
+                        // Console.WriteLine($"Socket client kirim pesan: \"{(stx == "\x02" ? "<STX>" : stx)}\"{userMessage}\"{(etx == "\x03" ? "<ETX>" : etx)}\" ");
+
+                        // sender.Send(messageBuffer);
+                        int bufferSize = 255;
+
+                        for (int i = 0; i < messageBuffer.Length; i += bufferSize)
                         {
-                            throw new Exception("Failed to receive ACK after STX...ETX");
+                            bool isLastChunk = i + bufferSize >= messageBuffer.Length;
+
+                            int chunkSize = isLastChunk ? messageBuffer.Length - i : bufferSize;
+                            byte[] chunkBuffer = new byte[chunkSize];
+                            Array.Copy(messageBuffer, i, chunkBuffer, 0, chunkSize);
+
+                            string chunkMessage = stx + Encoding.ASCII.GetString(chunkBuffer) + (isLastChunk ? etx : etb);
+                            byte[] messageToSend = Encoding.ASCII.GetBytes(chunkMessage);
+                            Console.WriteLine($"Socket client kirim pesan: \"{(stx == "\x02" ? "<STX>" : stx)}\"{Encoding.ASCII.GetString(chunkBuffer)}{(isLastChunk ? "<ETX>" : "<ETB>")}\"");
+
+                            sender.Send(messageToSend);
+                            
+                            sender.Receive(ackBuffer);
+
+                            if (ackBuffer[0] != 0x06)
+                            {
+                                throw new Exception("Failed to receive ACK after sending chink starting at byte {i}");
+                            }
+                            else
+                            {
+                                Console.WriteLine("Socket client terima ACK");
+                            }
                         }
+
 
                     }
                     
