@@ -16,23 +16,23 @@ namespace Client
 
         static void ExecuteClient()
         {
-            try
-            {
+            
                 IPHostEntry ipHost = Dns.GetHostEntry(Dns.GetHostName());
                 IPAddress ipAddr = ipHost.AddressList[0];
                 IPEndPoint localEndPoint = new IPEndPoint(ipAddr, 11111);
 
-                Socket sender = new Socket(ipAddr.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
-
                 int retryCount = 0;
                 int maxRerying = 10;
                 bool isConnected = false;
+                Socket sender = null;
 
                 while (retryCount < maxRerying && !isConnected)
                 {
                     try
                     {
                         Console.WriteLine($"Percobaan ke-{retryCount + 1}, mencoba terhubung ke server...");
+                        sender = new Socket(ipAddr.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
+
                         sender.Connect(localEndPoint);
                         isConnected = true;
                         Console.WriteLine("Socket connected to -> {0} ", sender.RemoteEndPoint.ToString());
@@ -96,7 +96,7 @@ namespace Client
 
                                     if (etbIdk != -1)
                                     {
-                                        Console.WriteLine($"Socket clinet terima potongan: \"<STX>{chunkMessage}<ETB>\"");
+                                        Console.WriteLine($"Socket client terima potongan: \"<STX>{chunkMessage}<ETB>\"");
                                     }
                                     else if (etxIdk != -1)
                                     {
@@ -122,8 +122,55 @@ namespace Client
                         }
                         catch (SocketException se)
                         {
-                            Console.WriteLine($"SocketException: {se.Message}");
-                            break;
+                            if (se.SocketErrorCode == SocketError.ConnectionReset ||
+                                se.SocketErrorCode == SocketError.ConnectionAborted)
+                                {
+                                    Console.WriteLine($"Koneksi ditutup paksa. Mencoba reconnect...");
+                                    
+                                    isConnected = false;
+                                    retryCount = 0;
+
+                                    if (sender != null)
+                                    {
+                                        sender.Shutdown(SocketShutdown.Both);
+                                        sender.Close();
+                                        sender = null;
+                                    }
+                                    while (retryCount < maxRerying && !isConnected)
+                                    {
+                                        try
+                                        {
+                                            
+                                            Console.WriteLine($"Percobaan ke-{retryCount + 1}, mencoba terhubung ke server...");
+                                            sender = new Socket(ipAddr.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
+                                            sender.Connect(localEndPoint);
+                                            isConnected = true;
+                                            Console.WriteLine("Socket connected to -> {0} ", sender.RemoteEndPoint.ToString());
+                                        }
+                                        catch (SocketException)
+                                        {    
+                                            retryCount++;
+                                            Console.WriteLine($"Gagal terkoneksi ke server, mencoba terhubung dalam 2 detik...");
+                                            Thread.Sleep(2000);
+                                        }
+                                        catch (Exception e2)
+                                        {
+                                            Console.WriteLine($"Exception during reconnect: {e2.Message}");
+                                            break;
+                                        }
+                                    }
+
+                                    if (!isConnected)
+                                    {
+                                        Console.WriteLine("Gagal terkoneksi ke server setelah 10 kali percobaan");
+                                        break;
+                                    }
+                                }
+                                else
+                                {
+                                Console.WriteLine($"SocketException: {se.Message}");
+                                break;
+                                }
                         }
                         catch (Exception e)
                         {
@@ -131,19 +178,17 @@ namespace Client
                             break;
                         }
                     }
-
-                    sender.Shutdown(SocketShutdown.Both);
-                    sender.Close();
+                    if (sender != null)
+                    {
+                        sender.Shutdown(SocketShutdown.Both);
+                        sender.Close();
+                    }
+                    
                 }
                 catch (Exception e)
                 {
                     Console.WriteLine("Unexpected exception : {0}", e.ToString());
                 }
-            }
-            catch (Exception e)
-            {
-                Console.WriteLine(e.ToString());
-            }
         }
     }
 }
