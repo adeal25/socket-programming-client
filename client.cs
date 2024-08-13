@@ -17,7 +17,7 @@ namespace Client
         private static Socket sender;
         private static bool isConnected = false;
         private static bool isRunning = true;
-        private static ClientState currentState = ClientState.Sending;
+        private static ClientState currentState = ClientState.Receiving;
 
 
         static void Main(string[] args)
@@ -63,11 +63,11 @@ namespace Client
             try
             {
                 // Mulai thread untuk mengirim dan menerima pesan secara bersamaan
-                Thread thSendMessage = new Thread(ClientSendMessage);
                 Thread thReceiveMessage = new Thread(ClientReceiveMessage);
+                Thread thSendMessage = new Thread(ClientSendMessage);
                 
-                thSendMessage.Start();
                 thReceiveMessage.Start();
+                thSendMessage.Start();
 
                 thSendMessage.Join();
                 thReceiveMessage.Join();
@@ -143,11 +143,8 @@ namespace Client
 
             while (isRunning)
             {
-                if (currentState != ClientState.Sending)
-                {
-                    Thread.Sleep(100);
-                    continue;
-                }
+                if (currentState != ClientState.Sending) continue;
+                
                 // canSend.WaitOne();
 
                 Console.Write("Masukkan pesan untuk dikirimkan ke server: ");
@@ -287,7 +284,7 @@ namespace Client
                             break;
                         }
                     }
-                    // currentState = ClientState.Sending;
+                    currentState = ClientState.Sending;
                 }
             }
             catch (SocketException se)
