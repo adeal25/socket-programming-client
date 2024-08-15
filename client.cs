@@ -17,7 +17,10 @@ namespace Client
         private static Socket sender;
         private static bool isConnected = false;
         private static bool isRunning = true;
-        private static ClientState currentState = ClientState.Receiving;
+        private static ClientState currentState = ClientState.Sending;
+        private static EventWaitHandle sendHandle = new AutoResetEvent(true);
+        private static EventWaitHandle receiveHandle = new AutoResetEvent(true);
+
 
 
         static void Main(string[] args)
@@ -63,14 +66,14 @@ namespace Client
             try
             {
                 // Mulai thread untuk mengirim dan menerima pesan secara bersamaan
-                Thread thReceiveMessage = new Thread(ClientReceiveMessage);
-                Thread thSendMessage = new Thread(ClientSendMessage);
+                Thread thMainSocket = new Thread(ClientReceiveMessage);
+                Thread thInputUser = new Thread(ClientSendMessage);
                 
-                thReceiveMessage.Start();
-                thSendMessage.Start();
+                thMainSocket.Start();
+                thInputUser.Start();
 
-                thSendMessage.Join();
-                thReceiveMessage.Join();
+                thInputUser.Join();
+                thMainSocket.Join();
 
                 CloseSocket();
             }
@@ -136,6 +139,102 @@ namespace Client
             }
         }
 
+       
+        private static void ClientReceiveMessage()
+        {
+            if (sender == null) return;
+
+            try
+            {
+                while (isRunning)
+                {
+                    if (currentState != ClientState.Receiving)
+                    {
+                        Thread.Sleep(100);
+                        continue;
+                    }
+                    receiveHandle.WaitOne();
+
+                    byte[] sohBuffer = new byte[1];
+                    sender.Receive(sohBuffer);
+                    if (sohBuffer[0] != 0x01)
+                    {
+                        Console.WriteLine("SOH yang diterima dari server tidak valid");
+                        continue;
+                    }
+
+                    var ackMessage = "\x06";
+                    sender.Send(Encoding.ASCII.GetBytes(ackMessage));
+                    Console.WriteLine($"Socket client kirim ACK: \"{(ackMessage == "\x06" ? "<ACK>" : ackMessage)}\"");
+
+                    List<byte> finalMsgBuff = new List<byte>();
+                    while (true)
+                    {
+                        byte[] messageBuffer = new byte[1024];
+                        int byteReceived = sender.Receive(messageBuffer);
+                        for (int i = 0; i < byteReceived; i++)
+                        {
+                            finalMsgBuff.Add(messageBuffer[i]);
+                        }
+
+                        int stxIdk = finalMsgBuff.IndexOf(0x02);
+                        int etbIdk = finalMsgBuff.IndexOf(0x23);
+                        int etxIdk = finalMsgBuff.IndexOf(0x03);
+
+                        if (stxIdk != -1 && (etbIdk != -1 || etxIdk != -1))
+                        {
+                            int endIdk = etbIdk != -1 ? etbIdk : etxIdk;
+                            byte[] chunkBytes = finalMsgBuff.GetRange(stxIdk + 1, endIdk - stxIdk - 1).ToArray();
+                            string chunkMessage = Encoding.ASCII.GetString(chunkBytes);
+
+                            if (etbIdk != -1)
+                            {
+                                Console.WriteLine($"Socket client terima potongan: \"<STX>{chunkMessage}<ETB>\"");
+                            }
+                            else if (etxIdk != -1)
+                            {
+                                Console.WriteLine($"Socket client terima potongan terakhir \"<STX>{chunkMessage}<ETX>\"");
+                            }
+
+                            sender.Send(Encoding.ASCII.GetBytes(ackMessage));
+                            Console.WriteLine($"Socket client kirim acknowledgment akhir: \"{(ackMessage == "\x06" ? "<ACK>" : ackMessage)}\"");
+
+                            finalMsgBuff.RemoveRange(0, endIdk + 1);
+                        }
+
+                        if (finalMsgBuff.Contains(0x04))
+                        {
+                            Console.WriteLine("Akhir penerimaan transmisi dari server.");
+                            finalMsgBuff.Clear();
+                            break;
+                        }
+                    }
+                    currentState = ClientState.Sending;
+                    sendHandle.Set();
+                }
+            }
+            catch (SocketException se)
+            {
+                if (se.SocketErrorCode == SocketError.ConnectionReset || se.SocketErrorCode == SocketError.ConnectionAborted)
+                {
+                    Console.WriteLine("Koneksi ditutup paksa. Mencoba reconnect...");
+                    IPEndPoint endPoint = sender.RemoteEndPoint as IPEndPoint;
+                    int retryCount = 0;
+                    int maxRetries = 10;
+                    ReconnectSocket(endPoint, ref retryCount, maxRetries);
+                }
+                else
+                {
+                    Console.WriteLine($"SocketException: {se.Message}");
+                }
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine($"Exception: {e.Message}");
+            }
+
+        }
+
         private static void ClientSendMessage()
         {
             // AutoResetEvent canSend = new AutoResetEvent(true);
@@ -146,6 +245,8 @@ namespace Client
                 if (currentState != ClientState.Sending) continue;
                 
                 // canSend.WaitOne();
+                sendHandle.WaitOne();
+                
 
                 Console.Write("Masukkan pesan untuk dikirimkan ke server: ");
                 string userMessage = Console.ReadLine();
@@ -211,101 +312,10 @@ namespace Client
 
                 sender.Send(Encoding.ASCII.GetBytes(eot));
                 Console.WriteLine($"Socket client kirim: \"{(eot == "\x04" ? "<EOT>" : eot)}\"");
-                // currentState = ClientState.Receiving;
-                // canSend.Set();
+                currentState = ClientState.Receiving;
+                receiveHandle.Set();
             }
         }
 
-        private static void ClientReceiveMessage()
-        {
-            if (sender == null) return;
-
-            try
-            {
-                while (isRunning)
-                {
-                    if (currentState != ClientState.Receiving)
-                    {
-                        Thread.Sleep(100);
-                        continue;
-                    }
-
-                    byte[] sohBuffer = new byte[1];
-                    sender.Receive(sohBuffer);
-                    if (sohBuffer[0] != 0x01)
-                    {
-                        Console.WriteLine("SOH yang diterima dari server tidak valid");
-                        continue;
-                    }
-
-                    var ackMessage = "\x06";
-                    sender.Send(Encoding.ASCII.GetBytes(ackMessage));
-                    Console.WriteLine($"Socket client kirim ACK: \"{(ackMessage == "\x06" ? "<ACK>" : ackMessage)}\"");
-
-                    List<byte> finalMsgBuff = new List<byte>();
-                    while (true)
-                    {
-                        byte[] messageBuffer = new byte[1024];
-                        int byteReceived = sender.Receive(messageBuffer);
-                        for (int i = 0; i < byteReceived; i++)
-                        {
-                            finalMsgBuff.Add(messageBuffer[i]);
-                        }
-
-                        int stxIdk = finalMsgBuff.IndexOf(0x02);
-                        int etbIdk = finalMsgBuff.IndexOf(0x23);
-                        int etxIdk = finalMsgBuff.IndexOf(0x03);
-
-                        if (stxIdk != -1 && (etbIdk != -1 || etxIdk != -1))
-                        {
-                            int endIdk = etbIdk != -1 ? etbIdk : etxIdk;
-                            byte[] chunkBytes = finalMsgBuff.GetRange(stxIdk + 1, endIdk - stxIdk - 1).ToArray();
-                            string chunkMessage = Encoding.ASCII.GetString(chunkBytes);
-
-                            if (etbIdk != -1)
-                            {
-                                Console.WriteLine($"Socket client terima potongan: \"<STX>{chunkMessage}<ETB>\"");
-                            }
-                            else if (etxIdk != -1)
-                            {
-                                Console.WriteLine($"Socket client terima potongan terakhir \"<STX>{chunkMessage}<ETX>\"");
-                            }
-
-                            sender.Send(Encoding.ASCII.GetBytes(ackMessage));
-                            Console.WriteLine($"Socket client kirim acknowledgment akhir: \"{(ackMessage == "\x06" ? "<ACK>" : ackMessage)}\"");
-
-                            finalMsgBuff.RemoveRange(0, endIdk + 1);
-                        }
-
-                        if (finalMsgBuff.Contains(0x04))
-                        {
-                            Console.WriteLine("Akhir penerimaan transmisi dari server.");
-                            finalMsgBuff.Clear();
-                            break;
-                        }
-                    }
-                    currentState = ClientState.Sending;
-                }
-            }
-            catch (SocketException se)
-            {
-                if (se.SocketErrorCode == SocketError.ConnectionReset || se.SocketErrorCode == SocketError.ConnectionAborted)
-                {
-                    Console.WriteLine("Koneksi ditutup paksa. Mencoba reconnect...");
-                    IPEndPoint endPoint = sender.RemoteEndPoint as IPEndPoint;
-                    int retryCount = 0;
-                    int maxRetries = 10;
-                    ReconnectSocket(endPoint, ref retryCount, maxRetries);
-                }
-                else
-                {
-                    Console.WriteLine($"SocketException: {se.Message}");
-                }
-            }
-            catch (Exception e)
-            {
-                Console.WriteLine($"Exception: {e.Message}");
-            }
-        }
     }
 }
