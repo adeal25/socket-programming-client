@@ -162,7 +162,7 @@ namespace Client
                             if (receiveBuffer[i] == 0x01) // SOH
                             {
                                 Console.WriteLine("SOH diterima");
-                                receiveHandle.Set();
+                                // receiveHandle.Set();
 
                                 sender.Send(new byte[] { 0x06 }); // Send ACK
                                 Console.WriteLine("Socket client kirim ACK");
