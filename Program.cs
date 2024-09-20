@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 
@@ -14,7 +15,9 @@ namespace Client
         private static bool isRunning = true;
         private static bool SedangMengirim = false;
         private static EventWaitHandle sendHandle = new AutoResetEvent(true);
-        private static EventWaitHandle receiveHandle = new AutoResetEvent(true);
+        private static bool receiveACK = false;
+        private static bool receiveNAK = false;
+
 
         static void Main(string[] args)
         {
@@ -28,7 +31,7 @@ namespace Client
             IPAddress ipAddr;
             if (!IPAddress.TryParse(ipAddressInput, out ipAddr))
             {
-                Console.WriteLine("IP Address tidak valid");
+                LogWithTime("INFO", "IP Address tidak valid");
                 return;
             }
 
@@ -38,7 +41,7 @@ namespace Client
 
             if (!int.TryParse(portInput, out port) || port <= 0 || port > 65535)
             {
-                Console.WriteLine("Port tidak valid.");
+                LogWithTime("ERROR", "Port tidak valid.");
                 return;
             }
 
@@ -52,7 +55,7 @@ namespace Client
 
             if (!isConnected)
             {
-                Console.WriteLine("Gagal terkoneksi ke server setelah 10 kali percobaan");
+                LogWithTime("ERROR", "Failed to connect to the server.");
                 return;
             }
 
@@ -72,7 +75,7 @@ namespace Client
             }
             catch (Exception e)
             {
-                Console.WriteLine("Unexpected exception: {0}", e.ToString());
+                Console.WriteLine("ERROR", "Unexpected exception: {0}", e.ToString());
             }
         }
 
@@ -82,21 +85,22 @@ namespace Client
             {
                 try
                 {
-                    Console.WriteLine($"Percobaan ke-{retryCount + 1}, mencoba terhubung ke server...");
+                    LogWithTime("INFO", $"Coba {retryCount + 1}, mencoba terhubung ke server...");
                     sender = new Socket(endPoint.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
                     sender.Connect(endPoint);
                     isConnected = true;
-                    Console.WriteLine("Socket connected to -> {0} ", sender.RemoteEndPoint.ToString());
+                    string ip = sender.RemoteEndPoint.ToString();
+                    LogWithTime("INFO", $"Klien terhubung ke server pada IP: {ip}");
                 }
                 catch (SocketException)
                 {
                     retryCount++;
-                    Console.WriteLine("Gagal terkoneksi ke server, mencoba terhubung dalam 2 detik...");
+                    LogWithTime("ERROR", "Gagal terhubung ke server, ulangi dalam 2 detik...");
                     Thread.Sleep(2000);
                 }
                 catch (Exception e)
                 {
-                    Console.WriteLine($"Exception during connection: {e.Message}");
+                    LogWithTime($"ERROR" ,$"Exception during connection: {e.Message}");
                     break;
                 }
             }
@@ -122,7 +126,7 @@ namespace Client
                 }
                 catch (Exception e)
                 {
-                    Console.WriteLine($"Exception during shutdown: {e.Message}");
+                    LogWithTime($"ERROR", $"Exception during shutdown: {e.Message}");
                 }
                 finally
                 {
@@ -132,6 +136,7 @@ namespace Client
             }
         }
 
+        
         private static void ClientReceiveMessage()
         {
             if (sender == null) return;
@@ -140,7 +145,6 @@ namespace Client
             {
                 while (isRunning)
                 {
-                    // receiveHandle.WaitOne();
 
                     byte[] receiveBuffer = new byte[2048]; // 4028 bytes to hold SOH, ACK, and message
                     int bytesReceived = sender.Receive(receiveBuffer);
@@ -152,8 +156,15 @@ namespace Client
                         {
                             if (receiveBuffer[i] == 0x06) // ACK
                             {
-                                Console.WriteLine("Socket client terima ACK");
+                                LogWithTime("INFO", "Klien terima: <ACK>");
+                                receiveACK = true;
                                 // Handle ACK during sending
+                                sendHandle.Set();
+                            }
+                            else if (receiveBuffer[i] == 0x15)
+                            {
+                                LogWithTime("INFO", "Klien terima: <NAK>");
+                                receiveNAK = true;
                                 sendHandle.Set();
                             }
                         }
@@ -161,13 +172,14 @@ namespace Client
                         {
                             if (receiveBuffer[i] == 0x01) // SOH
                             {
-                                Console.WriteLine("SOH diterima");
+                                LogWithTime("INFO","Klien terima: <SOH>");
                                 // receiveHandle.Set();
 
                                 sender.Send(new byte[] { 0x06 }); // Send ACK
-                                Console.WriteLine("Socket client kirim ACK");
+                                LogWithTime("DEBUG", "Klien kirim: <ACK>");
 
                                 List<byte> finalMsgBuff = new List<byte>();
+                                List<byte> finalMessage = new List<byte>();
 
                                 while (true)
                                 {
@@ -177,7 +189,7 @@ namespace Client
                                     {
                                         finalMsgBuff.Add(messageBuffer[j]);
                                     }
-                                    // Console.WriteLine("finalMsgBuff saat ini: "+ BitConverter.ToString(finalMsgBuff.ToArray()));
+                                    // LogWithTime("finalMsgBuff saat ini: "+ BitConverter.ToString(finalMsgBuff.ToArray()));
 
             
                                     int stxIdk = finalMsgBuff.IndexOf(0x02);
@@ -201,42 +213,45 @@ namespace Client
 
                                         byte[] chunkBytes = finalMsgBuff.GetRange(stxIdk + 1, chunkLength - 3).ToArray();
                                         string chunkMessage = Encoding.ASCII.GetString(chunkBytes);
-                                        // Console.WriteLine($"Potongan pesan yang digunakan untuk checksum: {BitConverter.ToString(chunkBytes)}");
+                                        // LogWithTime($"Potongan pesan yang digunakan untuk checksum: {BitConverter.ToString(chunkBytes)}");
 
                                         byte cs1Byte = finalMsgBuff[endIdk - 2];
                                         byte cs2Byte = finalMsgBuff[endIdk - 1];
                                         string receivedCs1 =  cs1Byte.ToString("X2")[1].ToString();
                                         string receivedCs2 =  cs2Byte.ToString("X2")[1].ToString();
-                                        // Console.WriteLine($"Checksum diterima: CS1 = {receivedCs1}, CS2 = {receivedCs2}");
-
+                                        
+                                        
+                                        // Validate Payload data by calculating checksum while receiving data transmited
                                         if (ValidateChecksum(chunkBytes, receivedCs1, receivedCs2))
                                         {
-                                            Console.WriteLine("Checksum Cocok");
+                                            LogWithTime("DEBUG", "Checksum Cocok, Client kirim: <ACK>");
+                                            sender.Send(new byte[] {0x06});
+                                            finalMessage.AddRange(chunkBytes);
+                                            if (etbIdk != -1)
+                                            {
+                                                LogWithTime("INFO", $"Klien terima potongan pesan: <STX> {chunkMessage} <ETB>");
+                                            }
+                                            else if (etxIdk != -1)
+                                            {
+                                                LogWithTime("INFO", $"Klien terima pesan terakhir: <STX> {chunkMessage} <ETX>");
+                                                
+                                            }
                                         }
                                         else
                                         {
-                                            Console.WriteLine("Checksum tidak valid");
+                                            LogWithTime("DEBUG", "Klien kirim: <NAK> [pesan ditolak]");
+                                            sender.Send(new byte[] { 0x15 });
                                         }
-            
-                                        if (etbIdk != -1)
-                                        {
-                                            Console.WriteLine($"Socket client terima potongan pesan: \"<STX>{chunkMessage}<ETB>\"");
-                                        }
-                                        else if (etxIdk != -1)
-                                        {
-                                            Console.WriteLine($"Socket client terima potongan pesan terakhir \"<STX>{chunkMessage}<ETX>\"");
-                                        }
-            
-                                        sender.Send(new byte[] {0x06});
-                                        Console.WriteLine("Socket client kirim ACK");
-            
                                         finalMsgBuff.RemoveRange(0, endIdk + 1);
                                     }
             
                                     if (finalMsgBuff.Contains(0x04))
                                     {
-                                        Console.WriteLine("Akhir penerimaan transmisi dari server.");
+                                        string fullMessage = Encoding.ASCII.GetString(finalMessage.ToArray());
+                                        LogWithTime("INFO", $"Klien terima semua pesan: {fullMessage}");
+                                        LogWithTime("INFO", "Akhir transmisi pesan: <EOT>");
                                         finalMsgBuff.Clear();
+                                        finalMessage.Clear();
                                         break;
                                     }
                                 }
@@ -250,7 +265,7 @@ namespace Client
             {
                 if (se.SocketErrorCode == SocketError.ConnectionReset || se.SocketErrorCode == SocketError.ConnectionAborted)
                 {
-                    Console.WriteLine("Koneksi ditutup paksa. Mencoba reconnect...");
+                    LogWithTime("ERROR","Koneksi ditutup paksa. Mencoba menghubungkan ulang...");
                     IPEndPoint endPoint = sender.RemoteEndPoint as IPEndPoint;
                     int retryCount = 0;
                     int maxRetries = 10;
@@ -258,12 +273,12 @@ namespace Client
                 }
                 else
                 {
-                    Console.WriteLine($"SocketException: {se.Message}");
+                    LogWithTime("ERROR", $"SocketException: {se.Message}");
                 }
             }
             catch (Exception e)
             {
-                Console.WriteLine($"Exception: {e.Message}");
+                LogWithTime("ERROR", $"Exception: {e.Message}");
             }
         }
 
@@ -284,21 +299,27 @@ namespace Client
                     return;
                 }
 
-                SedangMengirim = true;
+                
 
+                KirimDariAwal:
+
+                SedangMengirim = true;
+                bool sendSuccess = false;
                 byte[] soh = new byte[] { 0x01 };
                 sender.Send(soh);
-                Console.WriteLine("Socket client kirim: <SOH>");
+                LogWithTime("DEBUG","Klien kirim: <SOH>");
 
                 // Wait for ACK
                 sendHandle.WaitOne();
-                // CEK IF ACK MASUK
 
                 byte[] messageBuffer = Encoding.ASCII.GetBytes(userMessage);
                 int bufferSize = 255;
 
                 for (int i = 0; i < messageBuffer.Length; i += bufferSize)
                 {
+                    int retryCountCs = 0;
+                    sendSuccess = false;
+
                     bool isLastChunk = i + bufferSize >= messageBuffer.Length;
                     int chunkSize = isLastChunk ? messageBuffer.Length - i : bufferSize;
                     byte[] chunkBuffer = new byte[chunkSize];
@@ -306,26 +327,65 @@ namespace Client
 
                     string chunkMessage = Encoding.ASCII.GetString(chunkBuffer);
 
-                    string checksumValues = CalculateChecksum(chunkBuffer);
-                    byte cs1 = Convert.ToByte(checksumValues[0].ToString(), 16);
-                    byte cs2 = Convert.ToByte(checksumValues[1].ToString(), 16);
-                    
-                    byte[] messageToSend = Encoding.ASCII.GetBytes($"\x02{chunkMessage}\x0D");
-                    
-                    messageToSend = AppendBytes(messageToSend, new byte[] { cs1, cs2 });
-                    messageToSend = AppendBytes(messageToSend, new byte[] { isLastChunk? (byte)0x03 : (byte)0x23 });
-                    Console.WriteLine($"Socket server kirim pesan: <STX>{chunkMessage}<CR>{cs1}{cs2}{(isLastChunk ? "<ETX>" : "<ETB>")}");
+                    while (retryCountCs < 5 && !sendSuccess)
+                    {
+                        KirimUlangPotongan:
 
-                    sender.Send(messageToSend);
+                        string checksumValues = CalculateChecksum(chunkBuffer);
+                        byte cs1 = Convert.ToByte(checksumValues[0].ToString(), 16);
+                        byte cs2 = Convert.ToByte(checksumValues[1].ToString(), 16);
+                        
+                        byte[] messageToSend = Encoding.ASCII.GetBytes($"\x02{chunkMessage}\x0D");
+                        
+                        messageToSend = AppendBytes(messageToSend, new byte[] { cs1, cs2 });
+                        messageToSend = AppendBytes(messageToSend, new byte[] { isLastChunk? (byte)0x03 : (byte)0x23 });
 
-                    sendHandle.WaitOne();
+                        LogWithTime("DEBUG", $"Klien kirim pesan: <STX> {chunkMessage} <CR>{cs1}{cs2}{(isLastChunk ? "<ETX>" : "<ETB>")}");
+                        sender.Send(messageToSend);
+
+                        sendHandle.Reset();
+                        sendHandle.WaitOne(1000);
+                        if (receiveNAK == true && retryCountCs < 5)
+                        {
+                            LogWithTime("DEBUG", $"Klien kirim ulang: Percobaan ke {retryCountCs+1}: {chunkMessage}");
+                            retryCountCs++;
+                            receiveNAK = false;
+                            goto KirimUlangPotongan;
+                        }
+                        else if (receiveACK == true)
+                        {
+                            receiveACK = false;
+                            sendSuccess = true;
+                        }
+                        else if (retryCountCs >= 5)
+                        {
+                            LogWithTime("ERROR", $"Gagal mengirim pesan setelah {retryCountCs} percobaan. Mengirim <EOT> dan berhenti.");
+                            sender.Send(new byte[] { 0x04 }); // Send EOT
+                            LogWithTime("DEBUG", "Klien kirim: <EOT>");
+                            SedangMengirim = false;
+                            break;
+                        }
+                        
+                        else
+                        {
+                            LogWithTime("DEBUG", "Tidak ada respons dari server. Mengulang dari awal...");
+                            goto KirimDariAwal;
+                        }
+                    }
                 }
-
-                sender.Send(new byte[] { 0x04 }); // Send EOT
-                Console.WriteLine("Socket client kirim: <EOT>");
-                SedangMengirim = false;
-                // receiveHandle.Set();
+                if (sendSuccess == true)
+                {
+                    sender.Send(new byte[] { 0x04 }); // Send EOT
+                    LogWithTime("DEBUG", "Klien kirim: <EOT>");
+                    SedangMengirim = false;
+                }
             }
+        }
+
+        private static void LogWithTime(string logLevel, string message)
+        {
+            string timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss:ff");
+            Console.WriteLine($"[{timestamp}] {logLevel}: {message}");
         }
 
         private static byte[] AppendBytes(byte[] original, byte[] toAppend)
@@ -335,6 +395,7 @@ namespace Client
             Array.Copy(toAppend, 0, result, original.Length, toAppend.Length);
             return result;
         }
+
 
         private static string CalculateChecksum(byte[] message)
         {
@@ -356,7 +417,7 @@ namespace Client
             string calculatedChecksum = CalculateChecksum(chunkBytes);
             
             // Log the received and calculated checksums for debugging.
-            Console.WriteLine($"Received: {receivedCs1}{receivedCs2}, Calculated: {calculatedChecksum}");
+            LogWithTime("INFO", $"Checksum - Received: {receivedCs1}{receivedCs2}, Calculated: {calculatedChecksum}");
 
             // Compare the entire checksum strings instead of splitting them.
             return calculatedChecksum == $"{receivedCs1}{receivedCs2}";
